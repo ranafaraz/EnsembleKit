@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ensemblekit"
+version = "0.1.0"
+description = "Offline ensemble-combiner benchmark: competence weighting and robust aggregation recover a known Bayes signal where naive averaging collapses -- a 2x2 dissociation (weighting x aggregation) over heterogeneous-competence and per-sample-corruption regimes, plus a diversity control, numpy-only, no downloads."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Rana Faraz" }]
+keywords = [
+  "ensemble-learning", "model-combination", "stacking", "bagging",
+  "robust-aggregation", "calibration", "ensemble-diversity",
+  "weighted-median", "benchmark", "machine-learning",
+]
+classifiers = [
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "License :: OSI Approved :: MIT License",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+# Numpy is the only runtime dependency. Base-learner predictions are *synthesized* as
+# log-odds of a known Bayes label (so the ground truth is exact), and every combiner
+# (uniform/competence-weighted mean, median, weighted median) is implemented on numpy --
+# no trained models, no datasets, no downloads, no API keys. CI runs the benchmark offline.
+dependencies = ["numpy>=1.23"]
+
+[project.optional-dependencies]
+# Optional cross-check backend: recompute the ranking metric with
+# sklearn.metrics.roc_auc_score and confirm it matches the hand-rolled numpy AUROC.
+sklearn = ["scikit-learn>=1.1"]
+dev = [
+  "pytest>=7.0",
+  "ruff>=0.1",
+]
+
+[project.scripts]
+ensemblekit = "ensemblekit.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/ranafaraz/EnsembleKit"
+Repository = "https://github.com/ranafaraz/EnsembleKit"
+
+[tool.setuptools.packages.find]
+include = ["ensemblekit*", "evals*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B"]
+ignore = ["E741"]
+
+[tool.ruff.lint.per-file-ignores]
+# __init__ pins BLAS threads via os.environ *before* importing numpy-backed submodules,
+# so those imports legitimately sit below executable code.
+"ensemblekit/__init__.py" = ["E402"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
