@@ -1,0 +1,308 @@
+name: Initialize wiki
+
+on:
+  workflow_dispatch:
+
+jobs:
+  wiki:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout wiki
+        run: |
+          git clone "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.wiki.git" wiki || \
+          (mkdir wiki && cd wiki && git init && git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.wiki.git")
+
+      - name: Write wiki pages
+        run: |
+          cd wiki
+          cat > Home.md << 'WIKIEOF'
+# EnsembleKit
+
+[![CI](https://github.com/ranafaraz/EnsembleKit/actions/workflows/ci.yml/badge.svg)](https://github.com/ranafaraz/EnsembleKit/actions/workflows/ci.yml)
+[![Live demo](https://img.shields.io/badge/live%20demo-ensemblekit.dexdevs.com-brightgreen?logo=rocket)](https://ensemblekit.dexdevs.com)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://github.com/ranafaraz/EnsembleKit/blob/main/LICENSE)
+
+**A benchmark for when ensembling helps and which combining trick buys which kind of robustness.**
+
+EnsembleKit synthesizes base-learner predictions as log-odds of a *known* Bayes label, then
+scores four combiners on how well they recover it. The result is a clean 2x2 dissociation:
+**competence weighting and robust aggregation each buy robustness to a different failure mode,
+and you need both** to be robust everywhere.
+
+- Heterogeneous learner competence (dead learners) breaks a uniform average; competence weighting fixes it.
+- Intermittent per-sample corruption breaks any fixed-weight combiner; robust aggregation (median) fixes it.
+- A diversity sweep shows ensemble gain collapses to zero as learner correlation rho approaches 1.
+- A scrambled-label null confirms every AUROC signal is real.
+- No models to train, no datasets, no API keys -- numpy only.
+
+```mermaid
+flowchart LR
+    subgraph input["Base learner synthesis"]
+        bayes["Known Bayes label\n(exact ground truth)"]
+        learners["Base learners\nz_k = a_k * s + noise"]
+    end
+    subgraph combiners["Combiners = weighting x aggregation"]
+        average["average\nuniform + mean"]
+        weighted["weighted\ncompetence + mean"]
+        robust["robust\nuniform + median"]
+        full["full\ncompetence + median"]
+    end
+    subgraph eval["Evaluation"]
+        auroc["AUROC vs Bayes label"]
+        gate["Dissociation gate (CI)"]
+    end
+    bayes --> learners --> combiners --> auroc --> gate
+```
+
+## Quick start
+
+```bash
+pip install -e ".[dev]"
+ensemblekit compare --regime het_competence
+ensemblekit compare --regime corrupted
+ensemblekit diversity
+python -m evals.harness
+pytest -q
+```
+
+## Wiki pages
+
+- [[Architecture]] -- log-odds formulation, base learner synthesis, combiner implementations, 2x2 design
+- [[Evaluation]] -- benchmark setup, results table, diversity sweep
+- [[Configuration]] -- env vars, .env.example
+- [[Development]] -- setup, tests, how to add a combiner or learner regime
+WIKIEOF
+
+          cat > Architecture.md << 'WIKIEOF'
+# Architecture
+
+## Overview
+
+EnsembleKit is structured around three concerns: **base learner synthesis** (produce predictions
+with a known Bayes answer), **combining** (fuse predictions into one score), and **evaluation**
+(recover the Bayes label and assert the dissociation). The combiners are textbook; what is
+designed is the experiment.
+
+## Log-odds formulation
+
+A latent score `s ~ N(0, 1)` is the Bayes log-odds. The label is `y ~ Bernoulli(sigmoid(BETA * s))`.
+Each base learner reports: `z_k = a_k * s + noise_k` where `a_k` is competence.
+
+**Why log-odds?** Combination is exact in log-odds space. The Bayes optimal combiner under
+conditional independence is the sum of the individual log-odds. A uniform average is optimal
+when all learners have equal competence. Competence weighting re-weights the log-likelihood
+contributions. The Bayes ceiling is exact and computable.
+
+## Base learner synthesis
+
+- `a_k = 1`: learner perfectly tracks `s`
+- `a_k = 0`: "dead learner" (pure noise)
+- A regime changes the competence vector and noise structure, never the Bayes label.
+
+## Regimes
+
+| Regime | Learner construction | What fails |
+|---|---|---|
+| homogeneous | All `a_k` equal; iid noise | Control |
+| het_competence | One strong `a_k`; rest `a_k = 0` | Uniform combiners dilute the strong learner |
+| corrupted | All `a_k` equal; per-sample garbage on random fraction | Fixed-weight combiners can't reject intermittent corruption |
+
+## Combiner implementations
+
+2x2: **weighting** x **aggregation**
+
+**Uniform:** every learner weighted equally.
+
+**Competence weighting:** weights proportional to holdout ranking skill. Static per-learner weight.
+
+**Mean aggregation:** average (weighted or not) log-odds across learners.
+
+**Median aggregation (robust):** per-sample median across learners. Rejects outlier learners sample-by-sample.
+
+| Combiner | Weighting | Aggregation | Dead learners | Per-sample corruption |
+|---|---|---|---|---|
+| average | uniform | mean | no | no |
+| weighted | competence | mean | yes | no |
+| robust | uniform | median | no | yes |
+| full | competence | median | yes | yes |
+
+## 2x2 dissociation
+
+The axes are genuinely orthogonal: competence weighting is a static per-learner weight that
+cannot reject a learner that is garbage on only some samples; a per-sample median has no concept
+of learner quality.
+
+## Diversity sweep
+
+Vary inter-learner error correlation `rho` from 0 to 1. As `rho -> 1`, ensemble gain
+(ensemble AUROC - best-single AUROC) collapses to zero.
+
+## Module layout
+
+```
+ensemblekit/
+  synthesis/    -- Bayes label generator, base learner factory
+  combiners/    -- average, weighted, robust, full, single
+  regimes/      -- homogeneous, het_competence, corrupted
+  eval/         -- auroc, gate, diversity
+  cli.py        -- CLI entry point
+evals/          -- harness.py, gate.py
+tests/          -- 76 pytest tests
+```
+WIKIEOF
+
+          cat > Evaluation.md << 'WIKIEOF'
+# Evaluation
+
+## Benchmark setup
+
+- **Samples:** 1600 per cell, 16 random seeds; results are mean AUROC across seeds.
+- **Ground truth:** Bayes label `y ~ Bernoulli(sigmoid(BETA * s))` -- exact, no ambiguity.
+- **Bayes ceiling:** ~0.80 AUROC.
+- **Metric:** AUROC. 1.0 = perfect, 0.5 = chance.
+- **Null:** scrambled Bayes labels -- every combiner must fall to ~0.50.
+
+## Regimes
+
+| Regime | Description |
+|---|---|
+| homogeneous | All learners equally competent (control) |
+| het_competence | One strong learner, rest are dead (a_k = 0) |
+| corrupted | All competent on average; per-sample garbage on random fraction |
+
+## Results
+
+Mean AUROC over 16 seeds, 1600 samples/cell.
+
+| combiner | ingredients | homogeneous | het_competence | corrupted |
+|---|---|--:|--:|--:|
+| single | baseline | 0.759 | 0.789 | 0.635 |
+| average | uniform + mean | 0.801 | 0.713 | 0.668 |
+| weighted | competence + mean | 0.801 | 0.789 | 0.668 |
+| robust | uniform + median | 0.797 | 0.586 | 0.770 |
+| **full** | **competence + median** | **0.794** | **0.789** | **0.766** |
+
+## Key findings
+
+**Effect 1:** Uniform combiners drop on `het_competence` (average 0.801→0.713, robust 0.797→0.586). Weighted stay at 0.789.
+
+**Effect 2:** Mean combiners drop on `corrupted` (average 0.801→0.668, weighted 0.801→0.668). Median stay at ~0.77.
+
+Only `full` (both ingredients) is robust everywhere.
+
+## Diversity sweep
+
+| error correlation rho | 0.00 | 0.30 | 0.60 | 0.90 | 0.99 |
+|---|--:|--:|--:|--:|--:|
+| gain (average - best single) | +0.041 | +0.029 | +0.015 | +0.004 | +0.001 |
+
+## Reproduce
+
+```bash
+python -m evals.harness     # full table
+python -m evals.gate        # CI gate
+ensemblekit compare --regime het_competence
+ensemblekit diversity
+```
+WIKIEOF
+
+          cat > Configuration.md << 'WIKIEOF'
+# Configuration
+
+All configuration via environment variables. Defaults reproduce the published benchmark.
+
+## Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `ENSEMBLEKIT_COMBINER` | `full` | Combiner: `average`, `weighted`, `robust`, `full`, `single` |
+| `ENSEMBLEKIT_REGIME` | `homogeneous` | Regime: `homogeneous`, `het_competence`, `corrupted` |
+| `ENSEMBLEKIT_LABELS` | *(auto)* | Override Bayes label file path (optional) |
+| `ENSEMBLEKIT_SAMPLES` | `1600` | Number of samples per run |
+| `ENSEMBLEKIT_RHO` | `0.0` | Inter-learner error correlation for diversity sweep |
+| `ENSEMBLEKIT_SEED` | `42` | Base random seed |
+| `ENSEMBLEKIT_BACKEND` | `numpy` | Compute backend (numpy = offline) |
+
+## .env.example
+
+```dotenv
+ENSEMBLEKIT_COMBINER=full
+ENSEMBLEKIT_REGIME=homogeneous
+ENSEMBLEKIT_SAMPLES=1600
+ENSEMBLEKIT_RHO=0.0
+ENSEMBLEKIT_SEED=42
+ENSEMBLEKIT_BACKEND=numpy
+```
+
+## Usage
+
+```bash
+ensemblekit compare --combiner weighted --regime het_competence
+ensemblekit compare --regime corrupted
+ensemblekit diversity
+ensemblekit regimes
+```
+WIKIEOF
+
+          cat > Development.md << 'WIKIEOF'
+# Development
+
+## Setup
+
+```bash
+git clone https://github.com/ranafaraz/EnsembleKit.git
+cd EnsembleKit
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+pytest -q   # 76 tests
+```
+
+Optional sklearn cross-check: `pip install -e ".[sklearn]"`
+
+## Structure
+
+```
+ensemblekit/
+  synthesis/    -- Bayes label generator, base learner factory (z_k = a_k * s + noise)
+  combiners/    -- average, weighted, robust, full, single
+  regimes/      -- homogeneous, het_competence, corrupted
+  eval/         -- auroc, gate, diversity
+  cli.py        -- CLI entry point
+evals/          -- harness.py, gate.py
+tests/          -- 76 pytest tests
+docs/           -- ARCHITECTURE.md, DECISIONS.md, demo.gif
+```
+
+## Adding a combiner
+
+1. Create `ensemblekit/combiners/my_combiner.py` with `combine(log_odds, labels, rng) -> np.ndarray`.
+2. Register in `ensemblekit/combiners/__init__.py`.
+3. Add tests in `tests/test_combiners.py`.
+4. Add key to `ENSEMBLEKIT_COMBINER` accepted values.
+
+## Adding a regime
+
+1. Create `ensemblekit/regimes/my_regime.py` with `build_learners(s, y, rng) -> (log_odds, competence_hint)`.
+2. Register in `ensemblekit/regimes/__init__.py` and add description.
+3. Tests: regime must not change Bayes label `y`.
+
+## CI
+
+Runs `pytest -q` + `python -m evals.gate` on Python 3.10, 3.11, 3.12. No secrets needed.
+
+## Code style
+
+`black` + `ruff`. All random state via `np.random.default_rng(seed)`. Combiners are stateless.
+WIKIEOF
+
+      - name: Commit and push
+        run: |
+          cd wiki
+          git config user.name "Rana Faraz"
+          git config user.email "faraz.ahmed@iub.edu.pk"
+          git add .
+          git diff --cached --quiet || git commit -m "docs: initialize project wiki"
+          git push -u origin HEAD:master || git push -u origin HEAD:main
