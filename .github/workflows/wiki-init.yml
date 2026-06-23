@@ -7,7 +7,7 @@ jobs:
   wiki:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
 
     steps:
       - name: Checkout repo
@@ -15,5 +15,5 @@ jobs:
 
       - name: Write wiki pages and push
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_WIKI_TOKEN: ${{ secrets.GH_WIKI_TOKEN }}
         run: python .github/scripts/push_wiki.py

@@ -312,7 +312,7 @@ PAGES = {
 import json
 import urllib.request
 
-TOKEN = os.environ["GITHUB_TOKEN"]
+TOKEN = os.environ["GH_WIKI_TOKEN"]
 REPO = os.environ.get("GITHUB_REPOSITORY", "ranafaraz/EnsembleKit")
 
 
