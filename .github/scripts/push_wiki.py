@@ -309,49 +309,83 @@ PAGES = {
     """),
 }
 
+import json
+import urllib.request
+
 TOKEN = os.environ["GITHUB_TOKEN"]
 REPO = os.environ.get("GITHUB_REPOSITORY", "ranafaraz/EnsembleKit")
 
-with tempfile.TemporaryDirectory() as tmpdir:
-    wiki_url = f"https://x-access-token:{TOKEN}@github.com/{REPO}.wiki.git"
-    wiki_dir = os.path.join(tmpdir, "wiki")
 
-    # Try to clone existing wiki; if it fails, init a fresh repo
-    result = subprocess.run(
-        ["git", "clone", wiki_url, wiki_dir],
-        capture_output=True, text=True
+def gh_api(method, path, body=None):
+    url = f"https://api.github.com{path}"
+    data = json.dumps(body).encode() if body else None
+    req = urllib.request.Request(
+        url, data=data, method=method,
+        headers={
+            "Authorization": f"Bearer {TOKEN}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "Content-Type": "application/json",
+        },
     )
-    if result.returncode != 0:
-        print("Wiki repo does not exist yet, initializing fresh...")
-        os.makedirs(wiki_dir)
-        subprocess.run(["git", "init"], cwd=wiki_dir, check=True)
-        subprocess.run(["git", "remote", "add", "origin", wiki_url], cwd=wiki_dir, check=True)
+    try:
+        with urllib.request.urlopen(req) as resp:
+            return resp.status, json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
 
+
+# Step 1: try to create the Home page via REST API (initializes the wiki repo)
+print("Creating Home page via REST API to bootstrap wiki repo...")
+status, resp = gh_api("POST", f"/repos/{REPO}/wiki/pages",
+                       {"title": "Home", "content": PAGES["Home.md"]})
+print(f"  REST API status: {status} -> {resp.get('message', 'ok')}")
+
+if status in (200, 201):
+    # Home created via REST; create remaining pages
     for filename, content in PAGES.items():
-        path = os.path.join(wiki_dir, filename)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(content)
-        print(f"Wrote {filename}")
+        if filename == "Home.md":
+            continue
+        title = filename.removesuffix(".md")
+        status2, resp2 = gh_api("POST", f"/repos/{REPO}/wiki/pages",
+                                 {"title": title, "content": content})
+        print(f"  Created {title}: {status2} -> {resp2.get('message', 'ok')}")
+    print("Done via REST API.")
+else:
+    # REST API failed; fall back to git push
+    print("REST API unavailable, falling back to git push...")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        wiki_url = f"https://x-access-token:{TOKEN}@github.com/{REPO}.wiki.git"
+        wiki_dir = os.path.join(tmpdir, "wiki")
 
-    subprocess.run(
-        ["git", "config", "user.name", "Rana Faraz"],
-        cwd=wiki_dir, check=True
-    )
-    subprocess.run(
-        ["git", "config", "user.email", "faraz.ahmed@iub.edu.pk"],
-        cwd=wiki_dir, check=True
-    )
-    subprocess.run(["git", "add", "."], cwd=wiki_dir, check=True)
+        result = subprocess.run(["git", "clone", wiki_url, wiki_dir],
+                                capture_output=True, text=True)
+        if result.returncode != 0:
+            print("Wiki repo doesn't exist yet, initializing fresh...")
+            os.makedirs(wiki_dir)
+            subprocess.run(["git", "init"], cwd=wiki_dir, check=True)
+            subprocess.run(["git", "remote", "add", "origin", wiki_url],
+                           cwd=wiki_dir, check=True)
 
-    result = subprocess.run(
-        ["git", "-c", "user.name=Rana Faraz", "-c", "user.email=faraz.ahmed@iub.edu.pk",
-         "commit", "-m", "docs: initialize project wiki"],
-        cwd=wiki_dir, capture_output=True, text=True
-    )
-    print(result.stdout)
-    if result.returncode != 0 and "nothing to commit" not in result.stdout + result.stderr:
-        print("Commit error:", result.stderr)
-    else:
+        for filename, content in PAGES.items():
+            path = os.path.join(wiki_dir, filename)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
+            print(f"Wrote {filename}")
+
+        subprocess.run(["git", "config", "user.name", "Rana Faraz"],
+                       cwd=wiki_dir, check=True)
+        subprocess.run(["git", "config", "user.email", "faraz.ahmed@iub.edu.pk"],
+                       cwd=wiki_dir, check=True)
+        subprocess.run(["git", "add", "."], cwd=wiki_dir, check=True)
+
+        result = subprocess.run(
+            ["git", "-c", "user.name=Rana Faraz",
+             "-c", "user.email=faraz.ahmed@iub.edu.pk",
+             "commit", "-m", "docs: initialize project wiki"],
+            cwd=wiki_dir, capture_output=True, text=True
+        )
+        print(result.stdout)
         for branch in ["master", "main"]:
             push = subprocess.run(
                 ["git", "push", "-u", "origin", f"HEAD:{branch}"],
@@ -362,5 +396,4 @@ with tempfile.TemporaryDirectory() as tmpdir:
                 break
             else:
                 print(f"Push to {branch} failed: {push.stderr}")
-
-print("Done.")
+    print("Done.")
